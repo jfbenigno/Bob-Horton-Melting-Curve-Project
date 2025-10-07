@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DNA Melting Curve Simulator</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  body { font-family: sans-serif; margin: 20px; background: white; }
+  input, button { margin: 5px; }
+  #chartContainer { width: 80%; max-width: 700px; }
+  #tempSliderContainer { width: 80%; max-width: 700px; margin-top: 20px; }
+  #tempSlider { width: 100%; }
+  #percentDisplay { margin-top: 10px; font-weight: bold; }
+  #gcDisplay { margin-top: 10px; font-weight: bold; }
+  #tmDisplay { margin-top: 10px; font-weight: bold; color: darkblue; }
+  #visualBases { margin-top: 10px; font-family: monospace; word-wrap: break-word; max-width: 700px; }
+  .melted { color: red; }
+  .intact { color: black; }
+</style>
+</head>
+<body>
+<h1>DNA Melting Curve Simulator</h1>
+<p>Enter DNA sequences and adjust parameters:</p>
+<label>DNA Sequence 1: <input type="text" id="seq" value="ATGCGCGTTAGC" size="40"></label><br>
+<label>DNA Sequence 2 (optional for comparison): <input type="text" id="seq2" value="" size="40"></label><br>
+<label>Na⁺ concentration (M): <input type="number" id="na" value="0.05" step="0.001"></label><br>
+<label>Mg²⁺ concentration (M): <input type="number" id="mg" value="0.005" step="0.001"></label><br>
+<div id="chartContainer"><canvas id="meltChart"></canvas></div>
+<div id="tempSliderContainer">
+  <input type="range" id="tempSlider" min="20" max="100" value="70" step="0.5">
+  <div class="slider-caption">Temperature: <span id="sliderValue">70</span>°C</div>
+  <div id="percentDisplay">Percent Melted: 0%</div>
+  <div id="gcDisplay">GC Content (Seq1): 0% | GC Content (Seq2): N/A</div>
+  <div id="tmDisplay">Melting Temperature (Seq1): N/A | (Seq2): N/A</div>
+  <div id="visualBases"></div>
+  <button id="exportBtn">Export Chart</button>
+</div>
+<script>
+const NN_PARAMS = {
+  'AA': { dH: -7.9, dS: -22.2 }, 'TT': { dH: -7.9, dS: -22.2 },
+  'AT': { dH: -7.2, dS: -20.4 }, 'TA': { dH: -7.2, dS: -21.3 },
+  'CA': { dH: -8.5, dS: -22.7 }, 'TG': { dH: -8.5, dS: -22.7 },
+  'GT': { dH: -8.4, dS: -22.4 }, 'AC': { dH: -8.4, dS: -22.4 },
+  'CT': { dH: -7.8, dS: -21.0 }, 'AG': { dH: -7.8, dS: -21.0 },
+  'CG': { dH: -10.6, dS: -27.2 }, 'GC': { dH: -9.8, dS: -24.4 },
+  'GG': { dH: -8.0, dS: -19.9 }, 'CC': { dH: -8.0, dS: -19.9 }
+};
+const R = 1.987e-3;
+
+function calcGC(seq){
+  if(seq.length===0) return 0;
+  let gcCount=(seq.match(/[GC]/gi)||[]).length;
+  return (gcCount/seq.length*100).toFixed(1);
+}
+
+function calcBaseThermo(seq, saltNa=0.05, Mg2=0.0) {
+  let N = seq.length;
+  let dH = new Array(N).fill(0);
+  let dS = new Array(N).fill(0);
+  for (let i = 0; i < N - 1; i++) {
+    let dinuc = seq[i] + seq[i+1];
+    if (NN_PARAMS[dinuc]) {
+      dH[i] += NN_PARAMS[dinuc].dH;
+      dS[i] += NN_PARAMS[dinuc].dS;
+      dH[i+1] += NN_PARAMS[dinuc].dH;
+      dS[i+1] += NN_PARAMS[dinuc].dS;
+    }
+  }
+  const lnNa = Math.log(Math.max(saltNa,1e-9));
+  const lnMg = Math.log(Math.max(Mg2,1e-9));
+  const sCorr = 0.368 * lnNa + 0.1 * lnMg;
+  dS = dS.map(s => s + sCorr);
+  return { dH, dS };
+}
+
+function meltProbFromThermo(dH,dS,T){
+  let dS_kcal = dS/1000;
+  let dG = dH - T*dS_kcal;
+  let x = dG/(R*T);
+  if(x>50)x=50;
+  if(x<-50)x=-50;
+  return 1/(1+Math.exp(-x));
+}
+
+function computeMeltMap(seq,T_C,na,Mg2){
+  if(seq.length===0) return [];
+  let {dH,dS}=calcBaseThermo(seq,na,Mg2);
+  let T_K=T_C+273.15;
+  let emissions=seq.split('').map((_,i)=>meltProbFromThermo(dH[i],dS[i],T_K));
+  return emissions;
+}
+
+function computeFractionMelt(seq,T_C,na,Mg2){
+  if(seq.length===0) return 0;
+  let meltMap=computeMeltMap(seq,T_C,na,Mg2);
+  return meltMap.reduce((a,b)=>a+b,0)/meltMap.length;
+}
+
+function updateVisuals(seq,val,na,mg){
+  let percentDisplay=document.getElementById('percentDisplay');
+  let visualBases=document.getElementById('visualBases');
+  let gcDisplay=document.getElementById('gcDisplay');
+  let seq2=document.getElementById('seq2').value.toUpperCase();
+
+  if(seq.length===0){
+    percentDisplay.textContent="Percent Melted: N/A";
+    gcDisplay.textContent="GC Content (Seq1): N/A | GC Content (Seq2): "+(seq2.length>0?calcGC(seq2)+"%":"N/A");
+    visualBases.innerHTML="DNA:";
+    return;
+  }
+
+  let meltMap=computeMeltMap(seq,val,na,mg);
+  let fraction=meltMap.reduce((a,b)=>a+b,0)/meltMap.length;
+  let percent=(fraction*100).toFixed(1);
+  percentDisplay.textContent=`Percent Melted: ${percent}% (${(fraction*seq.length).toFixed(1)} of ${seq.length} bp)`;
+
+  let visual=seq.split('').map((base,i)=>`<span class="${meltMap[i]>0.5? 'melted':'intact'}">${base}</span>`).join('');
+  visualBases.innerHTML="DNA: "+visual;
+
+  let gc1=calcGC(seq);
+  let gc2=seq2.length>0?calcGC(seq2):"N/A";
+  gcDisplay.textContent=`GC Content (Seq1): ${gc1}% | GC Content (Seq2): ${gc2}${gc2!=="N/A"? "%":""}`;
+}
+
+function plotCurve(){
+  let seq=document.getElementById('seq').value.toUpperCase();
+  let seq2=document.getElementById('seq2').value.toUpperCase();
+  let na=parseFloat(document.getElementById('na').value);
+  let mg=parseFloat(document.getElementById('mg').value);
+  let Tmin=20, Tmax=100, step=0.5;
+
+  let temps=[], melts1=[], melts2=[];
+  for(let T=Tmin;T<=Tmax;T+=step){
+    temps.push(T);
+    melts1.push(computeFractionMelt(seq,T,na,mg));
+    if(seq2.length>0){
+      melts2.push(computeFractionMelt(seq2,T,na,mg));
+    }
+  }
+
+  let deriv1=[], deriv2=[];
+  for(let i=1;i<melts1.length;i++){
+    deriv1.push((melts1[i]-melts1[i-1])/(temps[i]-temps[i-1]));
+  }
+  if(seq2.length>0){
+    for(let i=1;i<melts2.length;i++){
+      deriv2.push((melts2[i]-melts2[i-1])/(temps[i]-temps[i-1]));
+    }
+  }
+
+  let Tm1 = temps[deriv1.indexOf(Math.max(...deriv1))] || 'N/A';
+  let Tm2 = seq2.length>0 ? temps[deriv2.indexOf(Math.max(...deriv2))] : 'N/A';
+
+  document.getElementById('tmDisplay').textContent = `Melting Temperature (Seq1): ${Tm1.toFixed ? Tm1.toFixed(2) : 'N/A'}°C | (Seq2): ${Tm2.toFixed ? Tm2.toFixed(2) : 'N/A'}°C`;
+
+  let ctx=document.getElementById('meltChart').getContext('2d');
+  if(window.meltChart && typeof window.meltChart.destroy==='function') window.meltChart.destroy();
+
+  let datasets=[
+    {label:'Fraction Melted (Seq1)', data:melts1, borderColor:'red', fill:false},
+    {label:'d(Fraction Melted)/dT (Seq1)', data:deriv1, borderColor:'blue', fill:false, yAxisID:'y1'}
+  ];
+
+  if(seq2.length>0){
+    datasets.push({label:'Fraction Melted (Seq2)', data:melts2, borderColor:'purple', fill:false});
+    datasets.push({label:'d(Fraction Melted)/dT (Seq2)', data:deriv2, borderColor:'green', fill:false, yAxisID:'y1'});
+  }
+
+  window.meltChart=new Chart(ctx,{
+    type:'line',
+    data:{labels:temps,datasets:datasets},
+    options:{
+      scales:{
+        x:{title:{display:true,text:'Temperature (°C)'}},
+        y:{title:{display:true,text:'Fraction Melted'},min:0,max:1},
+        y1:{type:'linear',position:'right',title:{display:true,text:'Derivative'}}
+      },
+      plugins:{legend:{display:true}},
+      backgroundColor:'white'
+    }
+  });
+
+  let slider=document.getElementById('tempSlider');
+  let sliderValue=document.getElementById('sliderValue');
+
+  slider.oninput=function(){
+    sliderValue.textContent=this.value;
+    updateVisuals(seq,parseFloat(this.value),na,mg);
+  };
+
+  updateVisuals(seq,parseFloat(slider.value),na,mg);
+}
+
+document.getElementById('exportBtn').addEventListener('click',()=>{
+  // Export chart with white background
+  const link=document.createElement('a');
+  const canvas=document.getElementById('meltChart');
+  const ctx=canvas.getContext('2d');
+  const tempCanvas=document.createElement('canvas');
+  tempCanvas.width=canvas.width;
+  tempCanvas.height=canvas.height;
+  const tempCtx=tempCanvas.getContext('2d');
+  tempCtx.fillStyle='white';
+  tempCtx.fillRect(0,0,tempCanvas.width,tempCanvas.height);
+  tempCtx.drawImage(canvas,0,0);
+  link.href=tempCanvas.toDataURL('image/png');
+  link.download='melting_curve.png';
+  link.click();
+});
+
+['seq','seq2','na','mg'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', plotCurve);
+});
+
+plotCurve();
+</script>
+</body>
+</html>
