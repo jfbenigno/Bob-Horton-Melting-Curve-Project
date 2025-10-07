@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DNA Melting Curve Simulator</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  body { font-family: sans-serif; margin: 20px; background: white; }
+  input, button { margin: 5px; }
+  #chartContainer { width: 80%; max-width: 700px; }
+  #tempSliderContainer { width: 80%; max-width: 700px; margin-top: 20px; }
+  #tempSlider { width: 100%; }
+  #percentDisplay, #gcDisplay, #tmDisplay { margin-top: 10px; font-weight: bold; }
+  #visualBases, #alignmentDisplay, #comparisonStats { margin-top: 10px; font-family: monospace; word-wrap: break-word; max-width: 700px; }
+  .melted { color: red; }
+  .intact { color: black; }
+  table { border-collapse: collapse; margin-top: 20px; }
+  th, td { border: 1px solid #aaa; padding: 5px 10px; text-align: center; }
+  th { background-color: #f2f2f2; }
+  #formulaBox { margin-top: 20px; padding: 10px; border: 1px solid #ccc; background-color: #fafafa; max-width: 700px; }
+  #alignmentDisplay span.match { color: green; }
+  #alignmentDisplay span.mismatch { color: red; }
+  #alignmentDisplay span.gap { color: gray; }
+  #comparisonBox { margin-top: 20px; padding: 10px; border: 1px solid #ccc; background-color: #f9f9f9; max-width: 700px; }
+</style>
+</head>
+<body>
+<h1>DNA Melting Curve Simulator</h1>
+<p>Enter DNA sequences and adjust parameters:</p>
+<label>DNA Sequence 1: <input type="text" id="seq" value="ATGCGCGTTAGC" size="40"></label><br>
+<label>DNA Sequence 2 (optional for comparison): <input type="text" id="seq2" value="" size="40"></label><br>
+<label>Na⁺ concentration (M): <input type="number" id="na" value="0.05" step="0.001"></label><br>
+<label>Mg²⁺ concentration (M): <input type="number" id="mg" value="0.005" step="0.001"></label><br>
+<div id="chartContainer"><canvas id="meltChart"></canvas></div>
+<div id="tempSliderContainer">
+  <input type="range" id="tempSlider" min="20" max="100" value="70" step="0.5">
+  <div class="slider-caption">Temperature: <span id="sliderValue">70</span>°C</div>
+  <div id="percentDisplay">Percent Melted: 0%</div>
+  <div id="gcDisplay">GC Content (Seq1): 0% | GC Content (Seq2): N/A</div>
+  <div id="tmDisplay">Melting Temperature (Seq1): N/A | (Seq2): N/A</div>
+  <div id="visualBases"></div>
+  <button id="exportBtn">Export Chart</button>
+</div>
+<div id="alignmentDisplay"></div>
+<div id="comparisonBox">
+  <h3>Sequence Comparison Stats</h3>
+  <div id="comparisonStats">(No comparison yet)</div>
+</div>
+
+<h2>Nearest-Neighbor Thermodynamic Parameters</h2>
+<table>
+  <tr><th>Base Pair</th><th>ΔH (kcal/mol)</th><th>ΔS (cal/mol·K)</th></tr>
+  <tr><td>AA / TT</td><td>-7.9</td><td>-22.2</td></tr>
+  <tr><td>AT</td><td>-7.2</td><td>-20.4</td></tr>
+  <tr><td>TA</td><td>-7.2</td><td>-21.3</td></tr>
+  <tr><td>CA / TG</td><td>-8.5</td><td>-22.7</td></tr>
+  <tr><td>GT / AC</td><td>-8.4</td><td>-22.4</td></tr>
+  <tr><td>CT / AG</td><td>-7.8</td><td>-21.0</td></tr>
+  <tr><td>CG</td><td>-10.6</td><td>-27.2</td></tr>
+  <tr><td>GC</td><td>-9.8</td><td>-24.4</td></tr>
+  <tr><td>GG / CC</td><td>-8.0</td><td>-19.9</td></tr>
+</table>
+
+<div id="formulaBox">
+  <h2>Melting Temperature (Tm) Prediction Formula</h2>
+  <p>The melting temperature (Tm) is estimated using the nearest-neighbor model:</p>
+  <p style="font-family: monospace;">
+    Tm = (ΔH) / (ΔS + R * ln(C/4)) - 273.15 + 16.6 * log10([Na⁺])
+  </p>
+  <ul>
+    <li><b>ΔH</b>: Enthalpy change (sum of nearest-neighbor enthalpies, kcal/mol)</li>
+    <li><b>ΔS</b>: Entropy change (sum of nearest-neighbor entropies, cal/mol·K)</li>
+    <li><b>R</b>: Gas constant = 1.987 cal/(mol·K)</li>
+    <li><b>C</b>: Strand concentration (mol/L)</li>
+    <li><b>[Na⁺]</b>: Sodium ion concentration (M)</li>
+  </ul>
+  <p>This formula accounts for sequence-dependent thermodynamics and salt concentration. A higher GC content or salt level increases stability, resulting in a higher Tm.</p>
+</div>
+
+<script>
+const R = 1.987e-3;
+const NN_PARAMS = {
+  'AA': { dH: -7.9, dS: -22.2 }, 'TT': { dH: -7.9, dS: -22.2 },
+  'AT': { dH: -7.2, dS: -20.4 }, 'TA': { dH: -7.2, dS: -21.3 },
+  'CA': { dH: -8.5, dS: -22.7 }, 'TG': { dH: -8.5, dS: -22.7 },
+  'GT': { dH: -8.4, dS: -22.4 }, 'AC': { dH: -8.4, dS: -22.4 },
+  'CT': { dH: -7.8, dS: -21.0 }, 'AG': { dH: -7.8, dS: -21.0 },
+  'CG': { dH: -10.6, dS: -27.2 }, 'GC': { dH: -9.8, dS: -24.4 },
+  'GG': { dH: -8.0, dS: -19.9 }, 'CC': { dH: -8.0, dS: -19.9 }
+};
+
+function calcGC(seq) {
+  if (seq.length === 0) return 0;
+  let gcCount = (seq.match(/[GC]/gi) || []).length;
+  return (gcCount / seq.length * 100).toFixed(1);
+}
+
+function calcTm(seq, na) {
+  if (seq.length < 2) return 'N/A';
+  let dH = 0, dS = 0;
+  for (let i = 0; i < seq.length - 1; i++) {
+    let dinuc = seq[i] + seq[i + 1];
+    if (NN_PARAMS[dinuc]) {
+      dH += NN_PARAMS[dinuc].dH;
+      dS += NN_PARAMS[dinuc].dS;
+    }
+  }
+  let conc = 5e-7;
+  let Tm = (dH * 1000) / (dS + (R * 1e3 * Math.log(conc / 4))) - 273.15 + 16.6 * Math.log10(na);
+  return Tm.toFixed(2);
+}
+
+function computeFractionMelt(seq, T) {
+  if (seq.length < 2) return 0;
+  let Tm = calcTm(seq, 0.05);
+  if (Tm === 'N/A') return 0;
+  return 1 / (1 + Math.exp((Tm - T) / 2));
+}
+
+function findPeak(data) {
+  let maxVal = Math.max(...data);
+  let index = data.indexOf(maxVal);
+  return { index, value: maxVal };
+}
+
+function plotCurve() {
+  const seq = document.getElementById('seq').value.toUpperCase();
+  const seq2 = document.getElementById('seq2').value.toUpperCase();
+  const na = parseFloat(document.getElementById('na').value);
+
+  document.getElementById('gcDisplay').textContent = `GC Content (Seq1): ${calcGC(seq)}% | GC Content (Seq2): ${seq2 ? calcGC(seq2) + '%' : 'N/A'}`;
+  document.getElementById('tmDisplay').textContent = `Melting Temperature (Seq1): ${calcTm(seq, na)}°C | (Seq2): ${seq2 ? calcTm(seq2, na) + '°C' : 'N/A'}`;
+
+  let temps = [], melts1 = [], melts2 = [];
+  for (let T = 20; T <= 100; T += 0.5) {
+    temps.push(T);
+    melts1.push(computeFractionMelt(seq, T));
+    melts2.push(seq2.length >= 2 ? computeFractionMelt(seq2, T) : null);
+  }
+
+  let ctx = document.getElementById('meltChart').getContext('2d');
+  if (window.meltChart && typeof window.meltChart.destroy === 'function') window.meltChart.destroy();
+
+  let datasets = [
+    { label: 'Fraction Melted (Seq1)', data: melts1, borderColor: 'red', fill: false },
+  ];
+  if (seq2.length >= 2) {
+    datasets.push({ label: 'Fraction Melted (Seq2)', data: melts2, borderColor: 'purple', fill: false });
+  }
+
+  const peak1 = findPeak(melts1);
+  const annotationPlugins = {
+    id: 'peakTooltip',
+    afterDraw(chart) {
+      const ctx = chart.ctx;
+      const xAxis = chart.scales.x;
+      const yAxis = chart.scales.y;
+      const x = xAxis.getPixelForValue(temps[peak1.index]);
+      const y = yAxis.getPixelForValue(peak1.value);
+      ctx.fillStyle = 'blue';
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.fillStyle = 'black';
+      ctx.font = '12px Arial';
+      ctx.fillText(`Peak: ${temps[peak1.index]}°C`, x + 10, y - 10);
+    }
+  };
+
+  window.meltChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: temps, datasets: datasets },
+    options: {
+      scales: {
+        x: { title: { display: true, text: 'Temperature (°C)' } },
+        y: { title: { display: true, text: 'Fraction Melted' }, min: 0, max: 1 }
+      }
+    },
+    plugins: [annotationPlugins]
+  });
+
+  // Auto-update alignment and comparison stats
+  if (seq && seq2) alignSequences(seq, seq2);
+}
+
+function alignSequences(seq1, seq2) {
+  let output = '';
+  let minLen = Math.max(seq1.length, seq2.length);
+  let matches = 0, mismatches = 0, gaps = 0;
+  for (let i = 0; i < minLen; i++) {
+    let base1 = seq1[i] || '-';
+    let base2 = seq2[i] || '-';
+    if (base1 === base2) {
+      output += `<span class='match'>${base1}</span>`;
+      matches++;
+    } else if (base1 === '-' || base2 === '-') {
+      output += `<span class='gap'>${base1}/${base2}</span>`;
+      gaps++;
+    } else {
+      output += `<span class='mismatch'>${base1}/${base2}</span>`;
+      mismatches++;
+    }
+  }
+  document.getElementById('alignmentDisplay').innerHTML = `<h3>Sequence Alignment</h3>${output}`;
+
+  let identity = ((matches / minLen) * 100).toFixed(1);
+  let gcDiff = Math.abs(calcGC(seq1) - calcGC(seq2)).toFixed(1);
+  document.getElementById('comparisonStats').innerHTML = `Identity: ${identity}%<br>Mismatches: ${mismatches}<br>Gaps: ${gaps}<br>Length Difference: ${Math.abs(seq1.length - seq2.length)}<br>GC Difference: ${gcDiff}%`;
+}
+
+['seq', 'seq2', 'na', 'mg'].forEach(id => {
+  document.getElementById(id).addEventListener('input', plotCurve);
+});
+
+plotCurve();
+
+document.getElementById('exportBtn').addEventListener('click', () => {
+  const canvas = document.getElementById('meltChart');
+  let link = document.createElement('a');
+  link.download = 'melting_curve.png';
+  try {
+    if (window.meltChart && typeof window.meltChart.toBase64Image === 'function') {
+      link.href = window.meltChart.toBase64Image();
+    } else {
+      link.href = canvas.toDataURL('image/png');
+    }
+    link.click();
+  } catch (err) {
+    alert('Export failed. Please try again.');
+  }
+});
+</script>
+</body>
+</html>
